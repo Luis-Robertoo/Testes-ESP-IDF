@@ -7,14 +7,15 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
-#include "driver/gpio.h" // Necessário para controlar pinos
+#include "driver/gpio.h" 
+#include "esp_crt_bundle.h"
 
 #define LED_PIN GPIO_NUM_15
 
 // Defina suas credenciais aqui
 #define WIFI_SSID      "rede"
 #define WIFI_PASS      "senha"
-#define WEBSOCKET_URI  "ws://ws.postman-echo.com/raw" // Servidor de eco público para testes
+#define WEBSOCKET_URI  "wss://echo.websocket.org" // Servidor de eco público para testes
 
 static const char *TAG = "MEU_APP";
 
@@ -32,6 +33,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             // Assim que conecta, enviamos uma mensagem de teste
             esp_websocket_client_handle_t client = (esp_websocket_client_handle_t)handler_args;
             char *msg = "Ola Servidor, sou o ESP32-S2!";
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
             esp_websocket_client_send_text(client, msg, strlen(msg), portMAX_DELAY);
             break;
             
@@ -40,9 +42,16 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             break;
             
         case WEBSOCKET_EVENT_DATA:
-            ESP_LOGI(TAG, "Dado recebido do servidor:");
-            // O servidor de eco vai devolver exatamente o que enviamos
-            printf("%.*s\n", data->data_len, (char *)data->data_ptr);
+            ESP_LOGI(TAG, "=== EVENTO DE DADO RECEBIDO ===");
+            ESP_LOGI(TAG, "Opcode do frame: 0x%x", data->op_code);
+            ESP_LOGI(TAG, "Comprimento dos dados: %d bytes", data->data_len);
+            
+            if (data->data_len > 0 && data->data_ptr != NULL) {
+                printf("Conteudo: %.*s\n", data->data_len, (char *)data->data_ptr);
+                fflush(stdout); // <--- FORÇA A SAÍDA NO MONITOR
+            } else {
+                ESP_LOGW(TAG, "O payload veio vazio ou nulo.");
+            }
             break;
     }
 }
@@ -56,6 +65,9 @@ static void iniciar_websocket(void)
 
     esp_websocket_client_config_t websocket_cfg = {};
     websocket_cfg.uri = WEBSOCKET_URI;
+
+    websocket_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    //websocket_cfg.skip_cert_common_name_check = true;
 
     // Cria a instância do cliente
     esp_websocket_client_handle_t client = esp_websocket_client_init(&websocket_cfg);
@@ -142,26 +154,15 @@ static void iniciar_wifi(void)
         },
     };
 
-    
     printf("======Set mode e config=======\n");
     fflush(stdout);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     
-    
     printf("======6. Liga o Wi-Fi (isso vai disparar o evento WIFI_EVENT_STA_START)=======\n");
     fflush(stdout);
     // 6. Liga o Wi-Fi (isso vai disparar o evento WIFI_EVENT_STA_START)
     ESP_ERROR_CHECK(esp_wifi_start());
-}
-
-static void tarefa_heartbeat(void *pvParameters)
-{
-    int contador = 0;
-    while (1) {
-        ESP_LOGI("HEARTBEAT", "Sistema rodando... tick: %d", contador++);
-        vTaskDelay(5000 / portTICK_PERIOD_MS); // Printa a cada 5 segundos
-    }
 }
 
 static void tarefa_blink(void *pvParameters)
@@ -186,19 +187,13 @@ void app_main(void)
 
     vTaskDelay(8000 / portTICK_PERIOD_MS);
 
-    printf("DEBUG: Inicio, apos o BLINK\n");
-    fflush(stdout);
-
-    xTaskCreate(tarefa_heartbeat, "Heartbeat", 2048, NULL, 5, NULL);
-
     printf("=========================================\n");
     fflush(stdout);
     printf("Monitor Serial conectado! Iniciando o App...\n");
     fflush(stdout);
     printf("=========================================\n");
     fflush(stdout);
-    // Lembra da memória NVS que conversamos? O Wi-Fi do ESP-IDF precisa dela
-    // inicializada para salvar dados de calibração do rádio, mesmo que você não a use diretamente.
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -211,8 +206,6 @@ void app_main(void)
     // Chama a nossa função de configuração do Wi-Fi
     iniciar_wifi();
 
-    // Loop principal vazio, apenas para manter a tarefa main viva caso queira fazer algo no futuro.
-    // O FreeRTOS está rodando o Wi-Fi e o WebSocket em outras tarefas no fundo!
     while (1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
